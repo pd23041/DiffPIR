@@ -7,9 +7,14 @@ import os
 import socket
 
 import blobfile as bf
-from mpi4py import MPI
 import torch as th
-import torch.distributed as dist
+
+# Control variable to enable/disable distributed features
+USE_DISTRIBUTED = False
+
+if USE_DISTRIBUTED:
+    from mpi4py import MPI
+    import torch.distributed as dist
 
 # Change this to reflect your cluster layout.
 # The GPU for a given rank is (rank % GPUS_PER_NODE).
@@ -22,6 +27,9 @@ def setup_dist():
     """
     Setup a distributed process group.
     """
+    if not USE_DISTRIBUTED:
+        return
+
     if dist.is_initialized():
         return
     os.environ["CUDA_VISIBLE_DEVICES"] = f"{MPI.COMM_WORLD.Get_rank() % GPUS_PER_NODE}"
@@ -47,7 +55,7 @@ def dev():
     Get the device to use for torch.distributed.
     """
     if th.cuda.is_available():
-        return th.device(f"cuda")
+        return th.device("cuda")
     return th.device("cpu")
 
 
@@ -55,16 +63,17 @@ def load_state_dict(path, **kwargs):
     """
     Load a PyTorch file without redundant fetches across MPI ranks.
     """
-    chunk_size = 2 ** 30  # MPI has a relatively small size limit
-    if MPI.COMM_WORLD.Get_rank() == 0:
+    if not USE_DISTRIBUTED or MPI.COMM_WORLD.Get_rank() == 0:
         with bf.BlobFile(path, "rb") as f:
             data = f.read()
-        num_chunks = len(data) // chunk_size
-        if len(data) % chunk_size:
-            num_chunks += 1
-        MPI.COMM_WORLD.bcast(num_chunks)
-        for i in range(0, len(data), chunk_size):
-            MPI.COMM_WORLD.bcast(data[i : i + chunk_size])
+        if USE_DISTRIBUTED:
+            chunk_size = 2 ** 30  # MPI has a relatively small size limit
+            num_chunks = len(data) // chunk_size
+            if len(data) % chunk_size:
+                num_chunks += 1
+            MPI.COMM_WORLD.bcast(num_chunks)
+            for i in range(0, len(data), chunk_size):
+                MPI.COMM_WORLD.bcast(data[i: i + chunk_size])
     else:
         num_chunks = MPI.COMM_WORLD.bcast(None)
         data = bytes()
@@ -78,9 +87,10 @@ def sync_params(params):
     """
     Synchronize a sequence of Tensors across ranks from rank 0.
     """
-    for p in params:
-        with th.no_grad():
-            dist.broadcast(p, 0)
+    if USE_DISTRIBUTED:
+        for p in params:
+            with th.no_grad():
+                dist.broadcast(p, 0)
 
 
 def _find_free_port():
