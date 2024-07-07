@@ -3,10 +3,14 @@ import random
 
 from PIL import Image
 import blobfile as bf
-from mpi4py import MPI
 import numpy as np
 from torch.utils.data import DataLoader, Dataset
 
+# Control variable to enable/disable distributed features
+USE_DISTRIBUTED = False
+
+if USE_DISTRIBUTED:
+    from mpi4py import MPI
 
 def load_data(
     *,
@@ -46,12 +50,20 @@ def load_data(
         class_names = [bf.basename(path).split("_")[0] for path in all_files]
         sorted_classes = {x: i for i, x in enumerate(sorted(set(class_names)))}
         classes = [sorted_classes[x] for x in class_names]
+    
+    if USE_DISTRIBUTED:
+        shard = MPI.COMM_WORLD.Get_rank()
+        num_shards = MPI.COMM_WORLD.Get_size()
+    else:
+        shard = 0
+        num_shards = 1
+
     dataset = ImageDataset(
         image_size,
         all_files,
         classes=classes,
-        shard=MPI.COMM_WORLD.Get_rank(),
-        num_shards=MPI.COMM_WORLD.Get_size(),
+        shard=shard,
+        num_shards=num_shards,
         random_crop=random_crop,
         random_flip=random_flip,
     )
